@@ -17,6 +17,8 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
         try {
             diskLruCache = DiskLruCache.open(new File("/sdcard/cache/"), 1, 1024 * 1024 * 10);
+            diskLruCache.setString("2", "22222222222222222222222222222222222222222222");
+            Log.v("aaa", "2 = " + diskLruCache.getString("2"));
         } catch (IOException e) {
             e.printStackTrace();
         }
@@ -25,10 +27,10 @@ public class MainActivity extends Activity {
             public void run() {
                 try {
                     long start = System.currentTimeMillis();
-                    for (int i = 0; i < 100000; i++) {
+                    for (int i = 0; i < 10000; i++) {
                         diskLruCache.setString("" + i, i + "__" + System.currentTimeMillis() + "_" + new Random().nextDouble());
                     }
-                    Log.v("time", "存储100000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
+                    Log.v("time", "存储10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
                 } catch (Exception e) {
                     e.printStackTrace();
                 }
@@ -51,8 +53,8 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 try {
-                    for (int i = 0; i < 100000; i++) {
-                        Log.v("aaa", i + " = " + diskLruCache.getString("" + i));
+                    for (int i = 0; i < 10000; i++) {
+                        Log.v("aaa", i + " = " + diskLruCache.getString("" + new Random().nextInt(10000)));
                         Thread.sleep(30);
                     }
                 } catch (Exception e) {

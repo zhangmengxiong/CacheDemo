@@ -45,9 +45,8 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.Callable;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -102,13 +101,11 @@ public final class DiskLruCache implements Closeable {
     static final String CACHE_FILE = "cache.c";
     static final String MAGIC = "libcore.io.DiskLruCache";
     static final String VERSION_1 = "1";
-    static final long ANY_SEQUENCE_NUMBER = -1;
     static final String STRING_KEY_PATTERN = "[a-z0-9_-]{1,120}";
     static final Pattern LEGAL_KEY_PATTERN = Pattern.compile(STRING_KEY_PATTERN);
     private static final String CLEAN = "CLEAN";
     private static final String DIRTY = "DIRTY";
     private static final String REMOVE = "REMOVE";
-    private static final String READ = "READ";
     private static final Object WRITE_SYNC = new Object(); // 写文件锁
 
     /*
@@ -124,8 +121,6 @@ public final class DiskLruCache implements Closeable {
      *     REMOVE 335c4c6028171cfddfbaae1a9c313c52
      *     DIRTY 1ab96a171faeeee38496d8b330771a7a
      *     CLEAN 1ab96a171faeeee38496d8b330771a7a 1600 234
-     *     READ 335c4c6028171cfddfbaae1a9c313c52
-     *     READ 3400330d1dfc7f3f7f4b8d4d803dfcf6
      *
      * The first five lines of the journal form its header. They are the
      * constant string "libcore.io.DiskLruCache", the disk cache's version,
@@ -141,7 +136,6 @@ public final class DiskLruCache implements Closeable {
      *   o CLEAN lines track a cache entry that has been successfully published
      *     and may be read. A publish line is followed by the length of each of
      *     its values.
-     *   o READ lines track accesses for LRU.
      *   o REMOVE lines track entries that have been deleted.
      *
      * The journal file is appended to as cache operations occur. The journal may
@@ -158,27 +152,18 @@ public final class DiskLruCache implements Closeable {
     private final RandomAccessFile cacheRandomFile;
     private final int appVersion;
     private long maxSize;
-    private long size = 0;
     private Writer journalWriter;
     private final LinkedHashMap<String, Entry> lruEntries =
             new LinkedHashMap<String, Entry>(0, 0.75f, true);
     private int redundantOpCount;
 
     /**
-     * To differentiate between old and current snapshots, each entry is given
-     * a sequence number each time an edit is isCommitted. A snapshot is stale if
-     * its sequence number is not equal to its entry's sequence number.
-     */
-    private long nextSequenceNumber = 0;
-
-    /**
      * This cache uses a single background thread to evict entries.
      */
-    final ThreadPoolExecutor executorService =
-            new ThreadPoolExecutor(0, 1, 60L, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>());
+    private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     private final Callable<Void> cleanupCallable = new Callable<Void>() {
         public Void call() throws Exception {
-            synchronized (DiskLruCache.this) {
+            synchronized (WRITE_SYNC) {
                 if (journalWriter == null) {
                     return null; // Closed.
                 }
@@ -199,7 +184,10 @@ public final class DiskLruCache implements Closeable {
         this.journalFileTmp = new File(directory, JOURNAL_FILE_TEMP);
         this.journalFileBackup = new File(directory, JOURNAL_FILE_BACKUP);
         this.cacheFile = new File(directory, CACHE_FILE);
-        if (!cacheFile.exists()) cacheFile.createNewFile();
+        if (!cacheFile.exists()) {
+            cacheFile.getParentFile().mkdirs();
+            cacheFile.createNewFile();
+        }
         this.cacheRandomFile = new RandomAccessFile(cacheFile, "rw");
         this.maxSize = maxSize;
     }
@@ -326,8 +314,6 @@ public final class DiskLruCache implements Closeable {
             entry.setStart(lines[1]);
         } else if (secondSpace == -1 && firstSpace == DIRTY.length() && line.startsWith(DIRTY)) {
             entry.currentEditor = new Editor(entry);
-        } else if (secondSpace == -1 && firstSpace == READ.length() && line.startsWith(READ)) {
-            // This work was already done by calling lruEntries.get().
         } else {
             throw new IOException("unexpected journal line: " + line);
         }
@@ -341,9 +327,7 @@ public final class DiskLruCache implements Closeable {
         deleteIfExists(journalFileTmp);
         for (Iterator<Entry> i = lruEntries.values().iterator(); i.hasNext(); ) {
             Entry entry = i.next();
-            if (entry.currentEditor == null) {
-                size += entry.length;
-            } else {
+            if (entry.currentEditor != null) {
                 entry.currentEditor = null;
                 i.remove();
             }
@@ -411,7 +395,7 @@ public final class DiskLruCache implements Closeable {
      * exist is not currently readable. If a value is returned, it is moved to
      * the head of the LRU queue.
      */
-    public synchronized Reader get(String key) throws IOException {
+    private synchronized Reader get(String key) throws IOException {
         checkNotClosed();
         validateKey(key);
         Entry entry = lruEntries.get(key);
@@ -424,7 +408,6 @@ public final class DiskLruCache implements Closeable {
         }
 
         redundantOpCount++;
-        journalWriter.append(READ + ' ' + key + '\n');
         if (journalRebuildRequired()) {
             executorService.submit(cleanupCallable);
         }
@@ -438,7 +421,6 @@ public final class DiskLruCache implements Closeable {
         Entry entry = lruEntries.get(key);
         if (entry == null) {
             entry = new Entry(key);
-            entry.start = cacheFile.length();
             lruEntries.put(key, entry);
         } else if (entry.currentEditor != null) {
             return null; // Another edit is in progress.
@@ -483,7 +465,7 @@ public final class DiskLruCache implements Closeable {
      * deletion is pending.
      */
     public synchronized long size() {
-        return size;
+        return cacheFile != null && cacheFile.exists() ? cacheFile.length() : 0;
     }
 
     private synchronized void completeEdit(Editor editor, boolean success) throws IOException {
@@ -503,9 +485,8 @@ public final class DiskLruCache implements Closeable {
         journalWriter.write(CLEAN + ' ' + entry.key + ' ' + entry.getLength() + ' ' + entry.getStart() + '\n');
         journalWriter.flush();
 
-        size = cacheFile.length();
         redundantOpCount++;
-        if (size > maxSize || journalRebuildRequired()) {
+        if (size() > maxSize || journalRebuildRequired()) {
             executorService.submit(cleanupCallable);
         }
     }
@@ -515,9 +496,7 @@ public final class DiskLruCache implements Closeable {
      * and eliminate at least 2000 ops.
      */
     private boolean journalRebuildRequired() {
-        final int redundantOpCompactThreshold = 2000;
-        return redundantOpCount >= redundantOpCompactThreshold //
-                && redundantOpCount >= lruEntries.size();
+        return redundantOpCount >= 2000 && redundantOpCount >= lruEntries.size();
     }
 
     /**
@@ -533,7 +512,6 @@ public final class DiskLruCache implements Closeable {
         if (entry == null || entry.currentEditor != null) {
             return false;
         }
-        size -= entry.length;
         entry.length = 0;
 
         redundantOpCount++;
@@ -588,7 +566,7 @@ public final class DiskLruCache implements Closeable {
     }
 
     private void trimToSize() throws IOException {
-        while (size > maxSize) {
+        while (size() > maxSize) {
             Map.Entry<String, Entry> toEvict = lruEntries.entrySet().iterator().next();
             remove(toEvict.getKey());
         }
@@ -693,13 +671,14 @@ public final class DiskLruCache implements Closeable {
             isInWritten = true;
             hasErrors = false;
             try {
+                entry.computeStart(value.length());
+
                 cacheRandomFile.seek(entry.getStart());
                 cacheRandomFile.write(value.getBytes());
                 entry.setLength(value.length());
             } catch (Exception e) {
                 e.printStackTrace();
                 hasErrors = true;
-            } finally {
             }
         }
 
@@ -776,6 +755,12 @@ public final class DiskLruCache implements Closeable {
                 this.start = Long.parseLong(start);
             } catch (Exception e) {
                 throw new IOException("unexpected journal line: " + length);
+            }
+        }
+
+        public void computeStart(long l) {
+            if (length <= 0 || l > length) {
+                start = cacheFile.length();
             }
         }
 
