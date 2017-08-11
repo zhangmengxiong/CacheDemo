@@ -11,8 +11,24 @@ import java.nio.charset.Charset;
  * Junk drawer of utility methods.
  */
 final class Util {
+    private static final long POLY64REV = 0x95AC9329AC4BC9B5L;
+    private static final long INITIALCRC = 0xFFFFFFFFFFFFFFFFL;
     static final Charset US_ASCII = Charset.forName("US-ASCII");
     static final Charset UTF_8 = Charset.forName("UTF-8");
+    private static long[] sCrcTable = new long[256];
+
+    static {
+        // 参考 http://bioinf.cs.ucl.ac.uk/downloads/crc64/crc64.c
+        long part;
+        for (int i = 0; i < 256; i++) {
+            part = i;
+            for (int j = 0; j < 8; j++) {
+                long x = ((int) part & 1) != 0 ? POLY64REV : 0;
+                part = (part >> 1) ^ x;
+            }
+            sCrcTable[i] = part;
+        }
+    }
 
     private Util() {
     }
@@ -59,5 +75,30 @@ final class Util {
             } catch (Exception ignored) {
             }
         }
+    }
+
+    /**
+     * key 格式化成long
+     *
+     * @param key
+     * @return
+     */
+    static long makeKey(String key) {
+        byte[] buffer = getBytes(key);
+        long crc = INITIALCRC;
+        for (byte aBuffer : buffer) {
+            crc = sCrcTable[(((int) crc) ^ aBuffer) & 0xff] ^ (crc >> 8);
+        }
+        return crc;
+    }
+
+    private static byte[] getBytes(String in) {
+        byte[] result = new byte[in.length() * 2];
+        int output = 0;
+        for (char ch : in.toCharArray()) {
+            result[output++] = (byte) (ch & 0xFF);
+            result[output++] = (byte) (ch >> 8);
+        }
+        return result;
     }
 }

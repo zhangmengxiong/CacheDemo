@@ -31,6 +31,7 @@ package cache.mx.com.cachedemo;
  */
 
 import java.io.BufferedWriter;
+import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.EOFException;
 import java.io.File;
@@ -47,8 +48,6 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * A cache that uses a bounded amount of space on a filesystem. Each cache
@@ -101,8 +100,6 @@ public final class DiskLruCache implements Closeable {
     static final String CACHE_FILE = "cache.c";
     static final String MAGIC = "libcore.io.DiskLruCache";
     static final String VERSION_1 = "1";
-    static final String STRING_KEY_PATTERN = "[a-z0-9_-]{1,120}";
-    static final Pattern LEGAL_KEY_PATTERN = Pattern.compile(STRING_KEY_PATTERN);
     private static final String CLEAN = "CLEAN";
     private static final String DIRTY = "DIRTY";
     private static final String REMOVE = "REMOVE";
@@ -153,8 +150,8 @@ public final class DiskLruCache implements Closeable {
     private final int appVersion;
     private long maxSize;
     private Writer journalWriter;
-    private final LinkedHashMap<String, Entry> lruEntries =
-            new LinkedHashMap<String, Entry>(0, 0.75f, true);
+    private final LinkedHashMap<Long, Entry> lruEntries =
+            new LinkedHashMap<Long, Entry>(0, 0.75f, true);
     private int redundantOpCount;
 
     /**
@@ -289,15 +286,15 @@ public final class DiskLruCache implements Closeable {
 
         int keyBegin = firstSpace + 1;
         int secondSpace = line.indexOf(' ', keyBegin);
-        final String key;
+        final long key;
         if (secondSpace == -1) {
-            key = line.substring(keyBegin);
+            key = Long.parseLong(line.substring(keyBegin));
             if (firstSpace == REMOVE.length() && line.startsWith(REMOVE)) {
                 lruEntries.remove(key);
                 return;
             }
         } else {
-            key = line.substring(keyBegin, secondSpace);
+            key = Long.parseLong(line.substring(keyBegin, secondSpace));
         }
 
         Entry entry = lruEntries.get(key);
@@ -395,9 +392,8 @@ public final class DiskLruCache implements Closeable {
      * exist is not currently readable. If a value is returned, it is moved to
      * the head of the LRU queue.
      */
-    private synchronized Reader get(String key) throws IOException {
+    private synchronized Reader get(long key) throws IOException {
         checkNotClosed();
-        validateKey(key);
         Entry entry = lruEntries.get(key);
         if (entry == null) {
             return null;
@@ -415,9 +411,8 @@ public final class DiskLruCache implements Closeable {
         return new Reader(entry.start, entry.length);
     }
 
-    private synchronized Editor edit(String key) throws IOException {
+    private synchronized Editor edit(long key) throws IOException {
         checkNotClosed();
-        validateKey(key);
         Entry entry = lruEntries.get(key);
         if (entry == null) {
             entry = new Entry(key);
@@ -506,8 +501,12 @@ public final class DiskLruCache implements Closeable {
      * @return true if an entry was removed.
      */
     public synchronized boolean remove(String key) throws IOException {
+        return remove(Util.makeKey(key));
+    }
+
+    private synchronized boolean remove(long key) throws IOException {
         checkNotClosed();
-        validateKey(key);
+
         Entry entry = lruEntries.get(key);
         if (entry == null || entry.currentEditor != null) {
             return false;
@@ -567,7 +566,7 @@ public final class DiskLruCache implements Closeable {
 
     private void trimToSize() throws IOException {
         while (size() > maxSize) {
-            Map.Entry<String, Entry> toEvict = lruEntries.entrySet().iterator().next();
+            Map.Entry<Long, Entry> toEvict = lruEntries.entrySet().iterator().next();
             remove(toEvict.getKey());
         }
     }
@@ -582,18 +581,11 @@ public final class DiskLruCache implements Closeable {
         Util.deleteContents(directory);
     }
 
-    private void validateKey(String key) {
-        Matcher matcher = LEGAL_KEY_PATTERN.matcher(key);
-        if (!matcher.matches()) {
-            throw new IllegalArgumentException("keys must match regex "
-                    + STRING_KEY_PATTERN + ": \"" + key + "\"");
-        }
-    }
-
     public void setString(String key, String value) {
         try {
+            long k = Util.makeKey(key);
             synchronized (WRITE_SYNC) {
-                Editor editor = edit(key);
+                Editor editor = edit(k);
                 editor.set(value);
                 editor.commit();
             }
@@ -603,7 +595,8 @@ public final class DiskLruCache implements Closeable {
 
     public String getString(String key) {
         try {
-            return get(key).getString();
+            long k = Util.makeKey(key);
+            return get(k).getString();
         } catch (Exception ignored) {
         }
         return null;
@@ -626,19 +619,25 @@ public final class DiskLruCache implements Closeable {
          */
         String getString() throws IOException {
             RandomAccessFile file = null;
+            ByteArrayOutputStream outputstream = null;
             byte[] bytes = null;
             try {
                 file = new RandomAccessFile(cacheFile, "r");
                 file.seek(startPosition);
-                bytes = new byte[length];
-                if (file.read(bytes, 0, length) != length) {
-                    throw new IOException("unexpected journal line: " + length);
+                bytes = new byte[1024];
+                int ll = 0;
+
+                outputstream = new ByteArrayOutputStream();
+
+                while ((ll = file.read(bytes, 0, bytes.length)) > 0) {
+                    outputstream.write(bytes, 0, ll);
+                    if (outputstream.size() >= length) break;
                 }
+                return outputstream.toString().substring(0, length);
             } finally {
                 Util.closeQuietly(file);
+                Util.closeQuietly(outputstream);
             }
-
-            return new String(bytes);
         }
 
         public void close() {
@@ -708,7 +707,7 @@ public final class DiskLruCache implements Closeable {
     }
 
     private final class Entry {
-        private final String key;
+        private final long key;
 
         /**
          * Lengths of this entry's files.
@@ -730,7 +729,7 @@ public final class DiskLruCache implements Closeable {
          */
         private Editor currentEditor;
 
-        private Entry(String key) {
+        private Entry(long key) {
             this.key = key;
             this.length = 0;
         }
