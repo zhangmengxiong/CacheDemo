@@ -4,37 +4,38 @@ import android.app.Activity;
 import android.os.Bundle;
 import android.util.Log;
 
-import java.io.File;
-import java.io.IOException;
 import java.util.Random;
 
-import cache.mx.com.cachedemo.cache.MXCache;
+import cache.mx.com.cachedemo.cache.CacheUtils;
+import cache.mx.com.cachedemo.cache_old.OldCacheUtils;
 
 public class MainActivity extends Activity {
-    MXCache diskLruCache;
+    CacheUtils diskLruCache;
+    OldCacheUtils oldCacheUtils;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        try {
-            diskLruCache = new MXCache(new File("/sdcard/cache/"), 1, 100, 1024 * 1024 * 10);
-//            diskLruCache.setString("" + 11, 11 + "__" + System.currentTimeMillis() + "_" + 22);
-//            Log.v("aaa", 11 + " = " + diskLruCache.getString("" + 11));
-//
-//            diskLruCache.setString("" + 22, 22 + "__" + System.currentTimeMillis() + "_" + 33);
-//            Log.v("aaa", 22 + " = " + diskLruCache.getString("" + 22));
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+
+        diskLruCache = CacheUtils.getInstance(this);
+        diskLruCache.setString("" + 11, 11 + "__" + System.currentTimeMillis() + "_" + 22);
+        Log.v("aaa", 11 + " = " + diskLruCache.getString("" + 11));
+
+        diskLruCache.setString("" + 22, 22 + "__" + System.currentTimeMillis() + "_" + 33);
+        Log.v("aaa", 22 + " = " + diskLruCache.getString("" + 22));
+
+        oldCacheUtils = OldCacheUtils.getInstance(this);
+
+
         new Thread(new Runnable() {
             @Override
             public void run() {
                 for (int i = 0; i < 5000; i++) {
                     String key = getRandomString(10);
-                    String value = getRandomString(new Random().nextInt(5000));
+                    String value = getRandomString(new Random().nextInt(500));
                     diskLruCache.setString(key, value);
-                    Log.v("aaa", key + " = " + value);
+//                    Log.v("aaa", key + " = " + value);
 
                     String newValue = diskLruCache.getString(key);
                     if (value.equals(newValue)) {
@@ -43,7 +44,7 @@ public class MainActivity extends Activity {
                         Log.e("aaa", key + " != " + newValue);
                     }
                     try {
-                        Thread.sleep(500);
+                        Thread.sleep(50);
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                     }
@@ -57,9 +58,38 @@ public class MainActivity extends Activity {
 //                try {
 //                    long start = System.currentTimeMillis();
 //                    for (int i = 0; i < 10000; i++) {
-//                        diskLruCache.setString("" + i, i + "__" + System.currentTimeMillis() + "_" + new Random().nextDouble());
+//                        if (i % 100 == 0) {
+//                            diskLruCache.setString("" + i, "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
+//                        } else {
+//                            diskLruCache.setString("" + i, i + "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
+//                        }
 //                    }
-//                    Log.v("time", "存储10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
+//                    Log.v("new", "存储10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
+//                    start = System.currentTimeMillis();
+//                    for (int i = 0; i < 10000; i++) {
+//                        String s = diskLruCache.getString("" + i);
+//                        if (s == null || !s.startsWith("" + i) || !s.endsWith("" + i)) {
+//                            Log.v("get", " 读取失败：" + i + " " + s);
+//                        }
+//                    }
+//                    Log.v("new", "读取10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
+//
+//                    for (int i = 0; i < 10000; i++) {
+//                        if (i % 100 == 0) {
+//                            oldCacheUtils.addCache("" + i, "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
+//                        } else {
+//                            oldCacheUtils.addCache("" + i, i + "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
+//                        }
+//                    }
+//                    Log.v("old", "存储10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
+//                    start = System.currentTimeMillis();
+//                    for (int i = 0; i < 10000; i++) {
+//                        String s = oldCacheUtils.getCache("" + i);
+//                        if (s == null || !s.startsWith("" + i) || !s.endsWith("" + i)) {
+//                            Log.v("get", " 读取失败：" + i + " " + s);
+//                        }
+//                    }
+//                    Log.v("old", "读取10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
 //                } catch (Exception e) {
 //                    e.printStackTrace();
 //                }
@@ -105,7 +135,7 @@ public class MainActivity extends Activity {
     }
 
     public static String getRandomString(int length) { //length表示生成字符串的长度
-        String base = "abcdefghijklmnopqrstuvwxyz0123456789";
+        String base = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
         Random random = new Random();
         StringBuffer sb = new StringBuffer();
         for (int i = 0; i < length; i++) {

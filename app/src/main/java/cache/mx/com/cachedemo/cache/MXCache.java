@@ -5,12 +5,16 @@ import android.util.Log;
 import java.io.BufferedInputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.nio.ByteOrder;
+import java.nio.MappedByteBuffer;
+import java.nio.channels.FileChannel;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 创建人： zhangmengxiong
@@ -18,29 +22,34 @@ import java.util.LinkedHashMap;
  * 联系方式: zmx_final@163.com
  */
 
-public class MXCache {
-    private static final String JOURNAL_FILE = "journal";
+class MXCache {
+    private static final String JOURNAL_FILE = "journal.ids";
     private static final String CACHE_FILE = "journal.cache";
     private static final byte[] MAGIC = "com.zmx.MXCache".getBytes(Utils.UTF_8);
 
-    private static final int CLEAN = 0x11;
-    private static final int DIRTY = 0x22;
-    private static final int REMOVE = 0x33;
+    private static final byte CLEAN = 21;
+    private static final byte DIRTY = 23;
+    private static final byte REMOVE = 25;
     private static final Object WRITE_SYNC = new Object(); // 写文件锁
     private static final byte[] BYTE_JOURNAL_HEAD = new byte[MAGIC.length + 4 + 8 + 8];
+    private static final int HEAD_DATA_ITEM_LENGTH = 33;
 
     private final int version;
+    private final int maxSize;
+    private final long maxLength;
     private final File directory;
     private final File journalFile;
-    private FileOutputStream journalWriter;
+    private RandomAccessFile journalWriter;
+    private FileChannel journalChannel;
+    private MappedByteBuffer journalBuffer;
     private final File cacheFile;
     private final RandomAccessFile cacheRandomFile;
-    private final long maxSize;
-    private final long maxLength;
+    private final AtomicInteger indexCount = new AtomicInteger(0);
 
-    private final LinkedHashMap<Long, Entry> lruEntries = new LinkedHashMap<>(0, 0.75f, true);
+    private final LinkedHashMap<Long, Integer> lruEntries = new LinkedHashMap<>(0, 0.75f, true);
+    private final ExecutorService THREAD_POOL = Executors.newSingleThreadExecutor();
 
-    public MXCache(File directory, int version, long maxSize, long maxLength) throws IOException {
+    MXCache(File directory, int version, int maxSize, long maxLength) throws IOException {
         this.version = version;
         this.directory = directory;
         this.journalFile = new File(directory, JOURNAL_FILE);
@@ -48,7 +57,7 @@ public class MXCache {
             journalFile.getParentFile().mkdirs();
             journalFile.createNewFile();
         }
-        this.journalWriter = new FileOutputStream(journalFile, true);
+        this.journalWriter = new RandomAccessFile(journalFile, "rw");
 
         cacheFile = new File(directory, CACHE_FILE);
         if (!cacheFile.exists()) {
@@ -69,7 +78,8 @@ public class MXCache {
         if (journalFile.exists()) {
             try {
                 readJournal();
-                processJournal();
+//                processJournal();
+                THREAD_POOL.submit(cacheRun);
                 return;
             } catch (Exception journalIsCorrupt) {
                 System.out.println("DiskLruCache " + directory + " is corrupt: " + journalIsCorrupt.getMessage() + ", removing");
@@ -95,122 +105,246 @@ public class MXCache {
                 throw new IOException("unexpected journal header: [" + version + ", " + maxlength + "]");
             }
 
-            bytes = new byte[JournalBuild.LENGTH];
-            JournalBuild build = new JournalBuild();
-            try {
-                while (true) {
-                    if (bis.read(bytes) != JournalBuild.LENGTH) {
-                        throw new IOException("unexpected read index journal file");
-                    }
-                    build.fillBytes(bytes);
-                    readJournalLine(build);
-                }
-            } catch (Exception e) {
-                e.printStackTrace();
+            if (journalWriter.length() != BYTE_JOURNAL_HEAD.length + maxSize * HEAD_DATA_ITEM_LENGTH) {
+                throw new IOException("unexpected journal header size is error");
             }
+
+            journalChannel = journalWriter.getChannel();
+            journalBuffer = journalChannel.map(FileChannel.MapMode.READ_WRITE, 0, journalFile.length());
+            journalBuffer.order(ByteOrder.LITTLE_ENDIAN);
         } finally {
             Utils.closeQuietly(bis);
         }
     }
 
-    private void readJournalLine(JournalBuild build) throws IOException {
-        Log.v("aaa", "read: " + build.type + " " + build.key + " " + build.length + " " + build.start);
-        if (build.type == REMOVE) {
-            lruEntries.remove(build.key);
-            return;
-        }
-
-        Entry entry = lruEntries.get(build.key);
-        if (entry == null) {
-            entry = new Entry(build.key);
-            lruEntries.put(build.key, entry);
-        }
-
-        if (build.type == DIRTY) {
-            entry.currentWriter = new ReadWriterBuild();
-        } else if (build.type == CLEAN) {
-            entry.length = build.length;
-            entry.start = build.start;
-            entry.readable = true;
-            entry.currentWriter = null;
-        } else {
-            throw new IOException("unexpected journal build: " + build);
-        }
-    }
-
-    private void processJournal() throws Exception {
-        for (Iterator<Entry> i = lruEntries.values().iterator(); i.hasNext(); ) {
-            Entry entry = i.next();
-            if (entry.currentWriter != null) {
-                entry.currentWriter = null;
-                i.remove();
-            }
-        }
-    }
-
+    /**
+     * 头文件布局：
+     * MAGIC + version + maxSize + maxLength + lastFindIndex
+     * key + status + length + time + seek
+     */
     private void rebuildJournal() {
         try {
-            journalWriter.write(MAGIC);
-            journalWriter.write(Utils.getBytes(version));
-            journalWriter.write(Utils.getBytes(maxSize));
-            journalWriter.write(Utils.getBytes(maxLength));
+            journalWriter.seek(0);
+            journalWriter.setLength(BYTE_JOURNAL_HEAD.length + maxSize * HEAD_DATA_ITEM_LENGTH);
 
-            for (Entry entry : lruEntries.values()) {
-                if (entry.currentWriter != null) {
-                    journalWriter.write(new JournalBuild(DIRTY, entry.key).getBytes());
-                } else {
-                    journalWriter.write(new JournalBuild(CLEAN, entry.key, entry.length, entry.start).getBytes());
-                }
-            }
-            journalWriter.flush();
+            journalChannel = journalWriter.getChannel();
+            journalBuffer = journalChannel.map(FileChannel.MapMode.READ_WRITE, 0, journalFile.length());
+            journalBuffer.order(ByteOrder.LITTLE_ENDIAN);
+
+            System.arraycopy(MAGIC, 0, BYTE_JOURNAL_HEAD, 0, MAGIC.length);
+            Utils.writeInt(BYTE_JOURNAL_HEAD, MAGIC.length, version);
+            Utils.writeLong(BYTE_JOURNAL_HEAD, MAGIC.length + 4, maxSize);
+            Utils.writeLong(BYTE_JOURNAL_HEAD, MAGIC.length + 4 + 8, maxLength);
+
+            journalBuffer.position(0);
+            journalBuffer.put(BYTE_JOURNAL_HEAD);
         } catch (IOException e) {
             e.printStackTrace();
         }
-
     }
+
+    private Runnable cacheRun = new Runnable() {
+        @Override
+        public void run() {
+            int start = BYTE_JOURNAL_HEAD.length;
+            int position;
+            indexCount.set(0);
+            for (int i = 0; i < maxSize; i++) {
+                position = start + i * HEAD_DATA_ITEM_LENGTH;
+                byte status = journalBuffer.get(position + 8);
+                if (status == DIRTY || status == CLEAN) {
+                    long k = journalBuffer.getLong(position);
+                    lruEntries.put(k, position);
+                    indexCount.incrementAndGet();
+                }
+            }
+        }
+    };
 
     private void delete() {
 
     }
 
-    public void setString(String k, String value) {
+    void setString(String k, String value) {
         if (k == null) return;
 
         long key = Utils.getKey(k);
         synchronized (WRITE_SYNC) {
-            Entry entry = null;
+            Entry entry;
             try {
-                entry = lruEntries.get(key);
-                boolean isNewKey = false;
+                entry = findOrNewEntry(key);
                 if (entry == null) {
                     entry = new Entry(key);
-                    isNewKey = true;
+                    entry.startIndex = findEmptyIndex();
                 }
-                entry.readable = false;
+                entry.addIndex = indexCount.incrementAndGet();
                 entry.writeValue(value.getBytes(Utils.UTF_8));
-                if (isNewKey) {
-                    lruEntries.put(key, entry);
-                }
             } catch (Exception e) {
                 e.printStackTrace();
-            } finally {
-                if (entry != null) {
-                    entry.readable = true;
+            }
+        }
+
+        checkOverFlow();
+    }
+
+    /**
+     * 数据溢出判断
+     */
+    private void checkOverFlow() {
+
+    }
+
+    /**
+     * 获取字符串时寻找字符串位置~
+     *
+     * @param key
+     * @return
+     */
+    private Entry findEntry(long key) {
+        Integer p = lruEntries.get(key);
+        if (p != null) {
+            long k = journalBuffer.getLong(p);
+            byte status = journalBuffer.get(p + 8);
+            int length = journalBuffer.getInt(p + 8 + 1);
+            long time = journalBuffer.getLong(p + 8 + 1 + 4);
+            long seek = journalBuffer.getLong(p + 8 + 1 + 4 + 8);
+            int index = journalBuffer.getInt(p + 8 + 1 + 4 + 8 + 8);
+
+            if (k == key) {
+                Entry entry = new Entry(key);
+                entry.startIndex = p;
+                entry.length = length;
+                entry.start = seek;
+                entry.time = time;
+                entry.status = status;
+                entry.addIndex = index;
+                return entry;
+            }
+        }
+
+        int start = BYTE_JOURNAL_HEAD.length;
+        int position;
+        for (int i = 0; i < maxSize; i++) {
+            position = start + i * HEAD_DATA_ITEM_LENGTH;
+            long k = journalBuffer.getLong(position);
+            byte status = journalBuffer.get(position + 8);
+            int length = journalBuffer.getInt(position + 8 + 1);
+            long time = journalBuffer.getLong(position + 8 + 1 + 4);
+            long seek = journalBuffer.getLong(position + 8 + 1 + 4 + 8);
+            int index = journalBuffer.getInt(position + 8 + 1 + 4 + 8 + 8);
+
+            if (k == key) {
+                Entry entry = new Entry(key);
+                entry.startIndex = position;
+                entry.length = length;
+                entry.start = seek;
+                entry.time = time;
+                entry.status = status;
+                entry.addIndex = index;
+
+                lruEntries.remove(key);
+                lruEntries.put(key, position);
+                return entry;
+            }
+            if (status != DIRTY && status != CLEAN && status != REMOVE) {
+                break;
+            }
+        }
+        return null;
+    }
+
+    private Entry findOrNewEntry(long key) {
+        Entry entry = null;
+        Integer p = lruEntries.get(key);
+        if (p != null) {
+            long k = journalBuffer.getLong(p);
+            byte status = journalBuffer.get(p + 8);
+            int length = journalBuffer.getInt(p + 8 + 1);
+            long time = journalBuffer.getLong(p + 8 + 1 + 4);
+            long seek = journalBuffer.getLong(p + 8 + 1 + 4 + 8);
+            int index = journalBuffer.getInt(p + 8 + 1 + 4 + 8 + 8);
+
+            if (k == key) {
+                entry = new Entry(key);
+                entry.startIndex = p;
+                entry.length = length;
+                entry.start = seek;
+                entry.time = time;
+                entry.status = status;
+                entry.addIndex = index;
+            }
+        }
+
+        if (entry == null) {
+            int start = BYTE_JOURNAL_HEAD.length;
+            int position;
+            int emptyPosition = -1;
+            for (int i = 0; i < maxSize; i++) {
+                position = start + i * HEAD_DATA_ITEM_LENGTH;
+                long k = journalBuffer.getLong(position);
+                byte status = journalBuffer.get(position + 8);
+
+                if (k == key) {
+                    int length = journalBuffer.getInt(position + 8 + 1);
+                    long time = journalBuffer.getLong(position + 8 + 1 + 4);
+                    long seek = journalBuffer.getLong(position + 8 + 1 + 4 + 8);
+                    int index = journalBuffer.getInt(position + 8 + 1 + 4 + 8 + 8);
+
+                    entry = new Entry(key);
+                    entry.startIndex = position;
+                    entry.length = length;
+                    entry.start = seek;
+                    entry.time = time;
+                    entry.status = status;
+                    entry.addIndex = index;
+
+                    lruEntries.remove(key);
+                    lruEntries.put(key, position);
+                    break;
+                }
+                if (status == REMOVE && emptyPosition < 0) {
+                    emptyPosition = position;
+                }
+
+                if (status != DIRTY && status != CLEAN && status != REMOVE) {
+                    entry = new Entry(key);
+                    entry.startIndex = emptyPosition > 0 ? emptyPosition : position;
+                    break;
                 }
             }
         }
+        return entry;
+    }
+
+    private int lastFindIndex = -1;
+
+    private int findEmptyIndex() throws IOException {
+        int start = BYTE_JOURNAL_HEAD.length;
+        int position;
+        int i = (--lastFindIndex) > 0 ? lastFindIndex : 0;
+
+        Log.v("aa", "lastFindIndex = " + lastFindIndex);
+        for (; i < maxSize; i++) {
+            position = start + i * HEAD_DATA_ITEM_LENGTH;
+            byte status = journalBuffer.get(position + 8);
+            if ((status != DIRTY && status != CLEAN)) {
+                lastFindIndex = i;
+                return position;
+            }
+        }
+        throw new IOException("没有找到可以存储的位置~");
     }
 
     public String getString(String k) {
         if (k == null) return null;
 
         long key = Utils.getKey(k);
-        Entry entry = lruEntries.get(key);
+        Entry entry = findEntry(key);
         if (entry == null) {
             return null;
         }
 
-        if (!entry.readable) {
+        if (entry.status != CLEAN) {
             return null;
         }
         try {
@@ -235,40 +369,34 @@ public class MXCache {
          */
         private long start;
 
-        /**
-         * True if this entry has ever been published.
-         */
-        private boolean readable;
-
-        /**
-         * The ongoing edit or null if this entry is not being edited.
-         */
-        private ReadWriterBuild currentWriter;
+        long time;
+        byte status = 0;
+        int startIndex = -1;
+        int addIndex = 0;
 
         private Entry(long key) {
             this.key = key;
             this.length = 0;
             this.start = 0;
-            readable = false;
-            currentWriter = null;
         }
 
         void writeValue(byte[] bytes) throws IOException {
-            journalWriter.write(new JournalBuild(DIRTY, key).getBytes());
-            currentWriter = new ReadWriterBuild(this);
-            currentWriter.time = System.currentTimeMillis();
-            currentWriter.value = bytes;
+            journalBuffer.putLong(startIndex, key);
+            journalBuffer.put(startIndex + 8, DIRTY);
 
-            long newStart = 0;
-            if (length <= 0 || currentWriter.getLength() > length) {
-                newStart = cacheFile.length();
+            long newStart = cacheFile.length();
+            if (start > 0 && length > 0 && bytes.length <= length) {
+                newStart = start;
             }
 
             cacheRandomFile.seek(newStart);
-            cacheRandomFile.write(currentWriter.getBytes());
+            cacheRandomFile.write(bytes);
 
-            journalWriter.write(new JournalBuild(CLEAN, key, bytes.length, newStart).getBytes());
-            journalWriter.flush();
+            journalBuffer.put(startIndex + 8, CLEAN);
+            journalBuffer.putInt(startIndex + 8 + 1, bytes.length);
+            journalBuffer.putLong(startIndex + 8 + 1 + 4, System.currentTimeMillis());
+            journalBuffer.putLong(startIndex + 8 + 1 + 4 + 8, newStart);
+            journalBuffer.putInt(startIndex + 8 + 1 + 4 + 8 + 8, addIndex);
 
             length = bytes.length;
             start = newStart;
@@ -280,14 +408,12 @@ public class MXCache {
 
         byte[] readValue() throws Exception {
             RandomAccessFile file = null;
-            byte[] bytes = new byte[length + ReadWriterBuild.LENGTH];
+            byte[] bytes = new byte[length];
             try {
                 file = new RandomAccessFile(cacheFile, "r");
                 file.seek(start);
                 if ((file.read(bytes)) == bytes.length) {
-                    ReadWriterBuild build = new ReadWriterBuild();
-                    build.readBytes(bytes);
-                    return build.value;
+                    return bytes;
                 }
                 return null;
             } finally {
