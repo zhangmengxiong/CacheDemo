@@ -28,73 +28,73 @@ public class MainActivity extends Activity {
         oldCacheUtils = OldCacheUtils.getInstance(this);
 
 
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                for (int i = 0; i < 5000; i++) {
-                    String key = getRandomString(10);
-                    String value = getRandomString(new Random().nextInt(500));
-                    diskLruCache.setString(key, value);
-//                    Log.v("aaa", key + " = " + value);
-
-                    String newValue = diskLruCache.getString(key);
-                    if (value.equals(newValue)) {
-                        Log.v("aaa", key + " = " + newValue);
-                    } else {
-                        Log.e("aaa", key + " != " + newValue);
-                    }
-                    try {
-                        Thread.sleep(50);
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
-                    }
-                }
-            }
-        }).start();
-
 //        new Thread(new Runnable() {
 //            @Override
 //            public void run() {
-//                try {
-//                    long start = System.currentTimeMillis();
-//                    for (int i = 0; i < 10000; i++) {
-//                        if (i % 100 == 0) {
-//                            diskLruCache.setString("" + i, "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
-//                        } else {
-//                            diskLruCache.setString("" + i, i + "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
-//                        }
-//                    }
-//                    Log.v("new", "存储10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
-//                    start = System.currentTimeMillis();
-//                    for (int i = 0; i < 10000; i++) {
-//                        String s = diskLruCache.getString("" + i);
-//                        if (s == null || !s.startsWith("" + i) || !s.endsWith("" + i)) {
-//                            Log.v("get", " 读取失败：" + i + " " + s);
-//                        }
-//                    }
-//                    Log.v("new", "读取10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
+//                for (int i = 0; i < 5000; i++) {
+//                    String key = getRandomString(5);
+//                    String value = getRandomString(new Random().nextInt(500));
+//                    diskLruCache.setString(key, value);
+////                    Log.v("aaa", key + " = " + value);
 //
-//                    for (int i = 0; i < 10000; i++) {
-//                        if (i % 100 == 0) {
-//                            oldCacheUtils.addCache("" + i, "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
-//                        } else {
-//                            oldCacheUtils.addCache("" + i, i + "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
-//                        }
+//                    String newValue = diskLruCache.getString(key);
+//                    if (value.equals(newValue)) {
+////                        Log.v("aaa", key + " = " + newValue);
+//                    } else {
+//                        Log.e("aaa", key + " != " + newValue);
 //                    }
-//                    Log.v("old", "存储10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
-//                    start = System.currentTimeMillis();
-//                    for (int i = 0; i < 10000; i++) {
-//                        String s = oldCacheUtils.getCache("" + i);
-//                        if (s == null || !s.startsWith("" + i) || !s.endsWith("" + i)) {
-//                            Log.v("get", " 读取失败：" + i + " " + s);
-//                        }
-//                    }
-//                    Log.v("old", "读取10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
-//                } catch (Exception e) {
-//                    e.printStackTrace();
+////                    try {
+////                        Thread.sleep(50);
+////                    } catch (InterruptedException e) {
+////                        e.printStackTrace();
+////                    }
 //                }
 //            }
 //        }).start();
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    long start = System.currentTimeMillis();
+                    for (int i = 0; i < 10000; i++) {
+                        if (i % 100 == 0) {
+                            diskLruCache.setString("" + i, "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
+                        } else {
+                            diskLruCache.setString("" + i, i + "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
+                        }
+                    }
+                    Log.v("new", "存储10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
+                    start = System.currentTimeMillis();
+                    for (int i = 0; i < 10000; i++) {
+                        String s = diskLruCache.getString("" + i);
+                        if (s == null || !s.startsWith("" + i) || !s.endsWith("" + i)) {
+                            Log.v("get", " 读取失败：" + i + " " + s);
+                        }
+                    }
+                    Log.v("new", "读取10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
+
+                    for (int i = 0; i < 10000; i++) {
+                        if (i % 100 == 0) {
+                            oldCacheUtils.addCache("" + i, "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
+                        } else {
+                            oldCacheUtils.addCache("" + i, i + "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
+                        }
+                    }
+                    Log.v("old", "存储10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
+                    start = System.currentTimeMillis();
+                    for (int i = 0; i < 10000; i++) {
+                        String s = oldCacheUtils.getCache("" + i);
+                        if (s == null || !s.startsWith("" + i) || !s.endsWith("" + i)) {
+                            Log.v("get", " 读取失败：" + i + " " + s);
+                        }
+                    }
+                    Log.v("old", "读取10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }).start();
 //        new Thread(new Runnable() {
 //            @Override
 //            public void run() {

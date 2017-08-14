@@ -14,9 +14,9 @@ public class CacheUtils {
     private static CacheUtils INSTANCE = null;
     private MXCache mxCache;
 
-    public CacheUtils(Context context) {
+    private CacheUtils(Context context) {
         try {
-            mxCache = new MXCache(new File("/sdcard/cache"), 1, 20000, 1024 * 1024 * 50);
+            mxCache = new MXCache(new File("/sdcard/cache"), 1, 10000, 1024 * 1024 * 50);
         } catch (Exception e) {
             e.printStackTrace();
         }
