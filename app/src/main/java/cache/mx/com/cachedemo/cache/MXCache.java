@@ -288,6 +288,12 @@ class MXCache {
         return null;
     }
 
+    /**
+     * 寻找可以插入的Entry
+     *
+     * @param key
+     * @return
+     */
     private Entry findOrNewEntryForInsert(long key) {
         Integer p = cacheEntry.get(key);
 
@@ -298,6 +304,8 @@ class MXCache {
                 return tmp;
             }
         }
+        if (emptyEntry.size() <= 0) return null;
+
         Entry entry = new Entry(key);
         entry.keyStartPosition = emptyEntry.remove(0);
 
