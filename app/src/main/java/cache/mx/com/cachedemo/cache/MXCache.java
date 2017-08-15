@@ -31,9 +31,9 @@ class MXCache {
     private static final String CACHE_FILE = "journal.cache";
     private static final byte[] MAGIC = "com.zmx.MXCache".getBytes(Utils.UTF_8);
 
-    static final byte CLEAN = 21;
-    static final byte DIRTY = 23;
-    static final byte REMOVE = 25;
+    private static final byte CLEAN = 21;
+    private static final byte DIRTY = 23;
+    private static final byte REMOVE = 25;
     private static final Object WRITE_SYNC = new Object(); // 写文件锁
     private static final byte[] BYTE_JOURNAL_HEAD = new byte[MAGIC.length + 4 + 8 + 8];
 
@@ -46,8 +46,8 @@ class MXCache {
     private RandomAccessFile journalWriter;
     private FileChannel journalChannel;
     private MappedByteBuffer journalBuffer;
-    private final File cacheFile;
-    private final RandomAccessFile cacheRandomFile;
+    private File cacheFile;
+    private RandomAccessFile cacheRandomFile;
     private final AtomicInteger indexCount = new AtomicInteger(0);
     private final AtomicBoolean isRecycle = new AtomicBoolean(false);
 
@@ -71,7 +71,7 @@ class MXCache {
             cacheFile.createNewFile();
         }
         this.cacheRandomFile = new RandomAccessFile(cacheFile, "rw");
-        this.maxSize = maxSize * 2;
+        this.maxSize = (int) (maxSize * 1.4f);
         this.maxLength = maxLength;
         this.safeSize = maxSize;
 
@@ -154,6 +154,9 @@ class MXCache {
      */
     private void rebuildJournal() {
         try {
+            emptyEntry.clear();
+            cacheEntry.clear();
+
             journalWriter.seek(0);
             journalWriter.setLength(BYTE_JOURNAL_HEAD.length + maxSize * IndexBuild.LENGTH);
 
@@ -206,9 +209,6 @@ class MXCache {
         }
     };
 
-    private void delete() {
-    }
-
     void remove(String key) {
         remove(Utils.getKey(key));
     }
@@ -221,6 +221,23 @@ class MXCache {
                 emptyEntry.add(position);
             }
         }
+    }
+
+    private void delete() {
+        try {
+            journalFile.delete();
+            cacheFile.delete();
+
+            this.journalWriter = new RandomAccessFile(journalFile, "rw");
+            this.cacheRandomFile = new RandomAccessFile(cacheFile, "rw");
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    void reset() {
+        delete();
+        rebuildJournal();
     }
 
     void setString(String k, String value) {
@@ -314,7 +331,14 @@ class MXCache {
         return entry;
     }
 
-    String getString(String k) {
+    /**
+     * 读String
+     *
+     * @param k       key
+     * @param timeOut 超时时间 单位：秒
+     * @return
+     */
+    String getString(String k, int timeOut) {
         if (k == null) return null;
 
         long key = Utils.getKey(k);
@@ -326,6 +350,17 @@ class MXCache {
         if (entry.status != CLEAN) {
             return null;
         }
+
+        if (timeOut > 0) {
+            long diff = Math.abs(entry.insertTime - System.currentTimeMillis());
+            if (diff > timeOut * 1000) {
+                Log.v(TAG, "缓存超时：" + k + "  -- " + diff / 1000f + " s");
+                return null;
+            } else {
+                Log.v(TAG, "缓存时间：" + k + "  -- " + diff / 1000f + " s");
+            }
+        }
+
 //        Log.v(TAG, "find sort Index = " + entry.sortIndex);
         try {
             byte[] bytes = entry.readValue();

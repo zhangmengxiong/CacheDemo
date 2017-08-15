@@ -7,11 +7,9 @@ import android.util.Log;
 import java.util.Random;
 
 import cache.mx.com.cachedemo.cache.CacheUtils;
-import cache.mx.com.cachedemo.cache_old.OldCacheUtils;
 
 public class MainActivity extends Activity {
     CacheUtils diskLruCache;
-    OldCacheUtils oldCacheUtils;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -24,8 +22,6 @@ public class MainActivity extends Activity {
 
         diskLruCache.setString("" + 22, 22 + "__" + System.currentTimeMillis() + "_" + 33);
         Log.v("aaa", 22 + " = " + diskLruCache.getString("" + 22));
-
-        oldCacheUtils = OldCacheUtils.getInstance(this);
 
 
 //        new Thread(new Runnable() {
@@ -73,23 +69,6 @@ public class MainActivity extends Activity {
                         }
                     }
                     Log.v("new", "读取10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
-
-                    for (int i = 0; i < 10000; i++) {
-                        if (i % 100 == 0) {
-                            oldCacheUtils.addCache("" + i, "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
-                        } else {
-                            oldCacheUtils.addCache("" + i, i + "__" + System.currentTimeMillis() + "_" + new Random().nextDouble() + " " + i);
-                        }
-                    }
-                    Log.v("old", "存储10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
-                    start = System.currentTimeMillis();
-                    for (int i = 0; i < 10000; i++) {
-                        String s = oldCacheUtils.getCache("" + i);
-                        if (s == null || !s.startsWith("" + i) || !s.endsWith("" + i)) {
-                            Log.v("get", " 读取失败：" + i + " " + s);
-                        }
-                    }
-                    Log.v("old", "读取10000条数据用时" + (System.currentTimeMillis() - start) / 1000f + " s");
                 } catch (Exception e) {
                     e.printStackTrace();
                 }

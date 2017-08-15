@@ -34,6 +34,6 @@ public class CacheUtils {
     }
 
     public String getString(String key) {
-        return mxCache.getString(key);
+        return mxCache.getString(key, 0);
     }
 }
