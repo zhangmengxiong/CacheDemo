@@ -15,6 +15,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -40,6 +41,7 @@ class MXCache {
     private final int version;
     private final int maxSize;
     private final int safeSize;
+    private final int minSize;
     private final long maxLength;
     private final File directory;
     private final File journalFile;
@@ -54,6 +56,8 @@ class MXCache {
     private final LinkedHashMap<Long, Integer> cacheEntry = new LinkedHashMap<>(0, 0.75f, true);
     private final ArrayList<Integer> emptyEntry = new ArrayList<>();
     private final ExecutorService THREAD_POOL = Executors.newSingleThreadExecutor();
+    private final Semaphore readSemaphore = new Semaphore(10); // 读取锁
+    private final Semaphore writeSemaphore = new Semaphore(1); // 写入锁
 
     MXCache(File directory, int version, int maxSize, long maxLength) throws IOException {
         this.version = version;
@@ -71,9 +75,10 @@ class MXCache {
             cacheFile.createNewFile();
         }
         this.cacheRandomFile = new RandomAccessFile(cacheFile, "rw");
-        this.maxSize = (int) (maxSize * 1.4f);
         this.maxLength = maxLength;
-        this.safeSize = maxSize;
+        this.maxSize = (int) (maxSize * 1.6f);
+        this.safeSize = (int) (maxSize * 1.3f);
+        this.minSize = maxSize;
 
         initCache();
     }
@@ -196,8 +201,8 @@ class MXCache {
                 for (int i = 0; i < maxSize; i++) {
                     position = start + i * IndexBuild.LENGTH;
                     IndexBuild.fillEntry(journalBuffer, entry, position);
-                    if (entry.isInUse() && Math.abs(curIndex - entry.sortIndex) > safeSize) {
-//                        Log.v(TAG, "remove:" + entry.sortIndex);
+                    if (entry.isInUse() && Math.abs(curIndex - entry.sortIndex) > minSize) {
+                        Log.v(TAG, "remove:" + entry.sortIndex);
                         remove(entry.key);
                     }
                 }
@@ -218,7 +223,9 @@ class MXCache {
             Integer position = cacheEntry.remove(key);
             if (position > 0) {
                 IndexBuild.deleteKey(journalBuffer, position, REMOVE);
-                emptyEntry.add(position);
+                synchronized (emptyEntry) {
+                    emptyEntry.add(position);
+                }
             }
         }
     }
@@ -236,28 +243,45 @@ class MXCache {
     }
 
     void reset() {
-        delete();
-        rebuildJournal();
+        try {
+            readSemaphore.acquire(10);
+            writeSemaphore.acquire();
+
+            delete();
+            rebuildJournal();
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            readSemaphore.release(10);
+            writeSemaphore.release();
+        }
     }
 
     void setString(String k, String value) {
         if (k == null) return;
 
-        long key = Utils.getKey(k);
-        synchronized (WRITE_SYNC) {
-            Entry entry;
-            try {
-                entry = findOrNewEntryForInsert(key);
-                if (entry == null) {
-                    throw new IOException("没有找到空白的位置插入~");
-                }
-                entry.sortIndex = indexCount.incrementAndGet();
-                entry.writeValue(value.getBytes(Utils.UTF_8));
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
+        try {
+            writeSemaphore.acquire();
 
+            long key = Utils.getKey(k);
+            synchronized (WRITE_SYNC) {
+                Entry entry;
+                try {
+                    entry = findOrNewEntryForInsert(key);
+                    if (entry == null) {
+                        throw new IOException("没有找到空白的位置插入~");
+                    }
+                    entry.sortIndex = indexCount.incrementAndGet();
+                    entry.writeValue(value.getBytes(Utils.UTF_8));
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            writeSemaphore.release();
+        }
         checkOverFlow();
     }
 
@@ -265,10 +289,19 @@ class MXCache {
      * 数据溢出判断
      */
     private void checkOverFlow() {
+        if (journalFile.length() + cacheFile.length() > maxLength) {
+            reset();
+            return;
+        }
+
         if (cacheEntry.size() > safeSize && !isRecycle.get()) {
             Log.v(TAG, "缓存数量超过安全值");
             THREAD_POOL.submit(cleanAndCheckRun);
         }
+    }
+
+    private void checkClosed() {
+
     }
 
     /**
@@ -286,22 +319,22 @@ class MXCache {
                 return entry;
             }
         }
-
-        int start = BYTE_JOURNAL_HEAD.length;
-        int position;
-        for (int i = 0; i < maxSize; i++) {
-            position = start + i * IndexBuild.LENGTH;
-            IndexBuild.fillEntry(journalBuffer, entry, position);
-
-            if (entry.key == key) {
-                cacheEntry.remove(key);
-                cacheEntry.put(key, position);
-                return entry;
-            }
-            if (entry.status != DIRTY && entry.status != CLEAN && entry.status != REMOVE) {
-                break;
-            }
-        }
+//
+//        int start = BYTE_JOURNAL_HEAD.length;
+//        int position;
+//        for (int i = 0; i < maxSize; i++) {
+//            position = start + i * IndexBuild.LENGTH;
+//            IndexBuild.fillEntry(journalBuffer, entry, position);
+//
+//            if (entry.key == key) {
+//                cacheEntry.remove(key);
+//                cacheEntry.put(key, position);
+//                return entry;
+//            }
+//            if (entry.status != DIRTY && entry.status != CLEAN && entry.status != REMOVE) {
+//                break;
+//            }
+//        }
         return null;
     }
 
@@ -321,10 +354,10 @@ class MXCache {
                 return tmp;
             }
         }
-        if (emptyEntry.size() <= 0) return null;
-
         Entry entry = new Entry(key);
-        entry.keyStartPosition = emptyEntry.remove(0);
+        synchronized (emptyEntry) {
+            entry.keyStartPosition = emptyEntry.remove(0);
+        }
 
         cacheEntry.remove(key);
         cacheEntry.put(key, entry.keyStartPosition);
@@ -341,32 +374,39 @@ class MXCache {
     String getString(String k, int timeOut) {
         if (k == null) return null;
 
-        long key = Utils.getKey(k);
-        Entry entry = findEntry(key);
-        if (entry == null) {
-            return null;
-        }
-
-        if (entry.status != CLEAN) {
-            return null;
-        }
-
-        if (timeOut > 0) {
-            long diff = Math.abs(entry.insertTime - System.currentTimeMillis());
-            if (diff > timeOut * 1000) {
-                Log.v(TAG, "缓存超时：" + k + "  -- " + diff / 1000f + " s");
+        try {
+            readSemaphore.acquire();
+            long key = Utils.getKey(k);
+            Entry entry = findEntry(key);
+            if (entry == null) {
                 return null;
-            } else {
-                Log.v(TAG, "缓存时间：" + k + "  -- " + diff / 1000f + " s");
             }
-        }
+
+            if (entry.status != CLEAN) {
+                return null;
+            }
+
+            if (timeOut > 0) {
+                long diff = Math.abs(entry.insertTime - System.currentTimeMillis());
+                if (diff > timeOut * 1000) {
+                    Log.v(TAG, "缓存超时：" + k + "  -- " + diff / 1000f + " s");
+                    return null;
+                } else {
+                    Log.v(TAG, "缓存时间：" + k + "  -- " + diff / 1000f + " s");
+                }
+            }
 
 //        Log.v(TAG, "find sort Index = " + entry.sortIndex);
-        try {
-            byte[] bytes = entry.readValue();
-            return bytes == null ? null : new String(bytes, Utils.UTF_8);
+            try {
+                byte[] bytes = entry.readValue();
+                return bytes == null ? null : new String(bytes, Utils.UTF_8);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
         } catch (Exception e) {
             e.printStackTrace();
+        } finally {
+            readSemaphore.release();
         }
         return null;
     }

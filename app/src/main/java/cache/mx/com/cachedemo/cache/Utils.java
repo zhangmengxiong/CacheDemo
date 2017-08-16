@@ -9,7 +9,7 @@ import java.nio.charset.Charset;
  * 联系方式: zmx_final@163.com
  */
 
-public class Utils {
+class Utils {
     private static final long POLY64REV = 0x95AC9329AC4BC9B5L;
     private static final long INITIALCRC = 0xFFFFFFFFFFFFFFFFL;
     static final Charset UTF_8 = Charset.forName("UTF-8");
@@ -29,7 +29,7 @@ public class Utils {
         }
     }
 
-    public static long getKey(String key) {
+    static long getKey(String key) {
         byte[] bytes = getBytes(key);
         long crc = INITIALCRC;
         for (byte b : bytes) {
@@ -61,7 +61,7 @@ public class Utils {
         return result;
     }
 
-    public static byte[] readBytes(byte[] bytes, int offset, int length) {
+    static byte[] readBytes(byte[] bytes, int offset, int length) {
         byte[] str = new byte[length];
         System.arraycopy(bytes, offset, str, 0, length);
         return str;
@@ -79,24 +79,6 @@ public class Utils {
             buf[offset + i] = (byte) (value & 0xff);
             value >>= 8;
         }
-    }
-
-    public static byte[] getBytes(int value) {
-        byte[] buf = new byte[4];
-        for (int i = 0; i < 4; i++) {
-            buf[i] = (byte) (value & 0xff);
-            value >>= 8;
-        }
-        return buf;
-    }
-
-    public static byte[] getBytes(long value) {
-        byte[] buf = new byte[8];
-        for (int i = 0; i < 8; i++) {
-            buf[i] = (byte) (value & 0xff);
-            value >>= 8;
-        }
-        return buf;
     }
 
     static void closeQuietly(Closeable closeable) {
